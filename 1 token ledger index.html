@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pending</title>
+
+<style>
+:root{
+  --bg:#f0f0f0;
+  --panel:#e2e2e2;
+  --border:#c6c6c6;
+  --text:#222;
+
+  --pending:#b00020;
+  --resolved:#0a7a3d;
+
+  --ticker-h:36px;
+  --header-h:110px;
+
+  --font: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+html, body{
+  height:100%;
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--font);
+  overflow:hidden;
+}
+
+#app{ position:relative; height:100%; }
+
+#header{
+  position:fixed;
+  top:0; left:0; right:0;
+  height:var(--header-h);
+  background:var(--panel);
+  border-bottom:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  z-index:50;
+}
+
+#status{
+  font-size:38px;
+  font-weight:700;
+}
+
+#status .label{ color:#222; }
+#status .value.pending{ color:var(--pending); }
+#status .value.resolved{ color:var(--resolved); }
+
+#ticker{
+  width:100%;
+  height:var(--ticker-h);
+  background:#dcdcdc;
+  border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);
+  overflow:hidden;
+}
+
+#tickerTrack{
+  position:relative;
+  left:100%;
+  white-space:nowrap;
+  font-size:15px;
+  color:#444;
+  animation:scroll 120s linear infinite;
+}
+
+@keyframes scroll{
+  from{ transform:translateX(0); }
+  to{ transform:translateX(-220%); }
+}
+
+#field{
+  position:fixed;
+  top:calc(var(--header-h) + var(--ticker-h));
+  left:0; right:0; bottom:0;
+}
+
+#tokenLayer{
+  position:absolute;
+  inset:0;
+  z-index:20;
+  pointer-events:none;
+}
+
+.token{
+  position:absolute;
+  width:260px;
+  height:150px;
+  background-size:cover;
+  background-repeat:no-repeat;
+}
+
+/* Ledger */
+#ledger{
+  position:fixed;
+  bottom:10px;
+  right:10px;
+  background:#f6f6f6;
+  border:1px solid var(--border);
+  padding:10px 12px;
+  font-size:13px;
+  line-height:1.4;
+  color:#444;
+  z-index:40;
+}
+
+#ledgerTitle{
+  font-weight:600;
+  margin-bottom:6px;
+}
+
+#instruction{
+  position:fixed;
+  bottom:10px;
+  left:10px;
+  font-size:14px;
+  color:#444;
+  z-index:30;
+}
+
+#interrupt{
+  position:fixed;
+  inset:0;
+  background:rgba(240,240,240,0.88);
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:80;
+}
+
+#interruptBox{
+  background:#f8f8f8;
+  border:1px solid var(--border);
+  padding:26px 30px;
+  font-size:18px;
+}
+</style>
+</head>
+
+<body>
+<div id="app">
+
+  <div id="header">
+    <div id="status">
+      <span class="label">Your status is: </span>
+      <span class="value pending">Pending</span>
+    </div>
+    <div id="ticker">
+      <div id="tickerTrack"></div>
+    </div>
+  </div>
+
+  <div id="field">
+    <div id="tokenLayer"></div>
+  </div>
+
+  <div id="ledger">
+    <div id="ledgerTitle">Activity record</div>
+    <div id="ledgerBody"></div>
+  </div>
+
+  <div id="instruction">
+    To reply to queries, use: Y — Yes, N — No. &nbsp;&nbsp;To check your status: ?
+  </div>
+
+  <div id="interrupt">
+    <div id="interruptBox">Have you received this letter?</div>
+  </div>
+
+</div>
+
+<script>
+(() => {
+
+/* ---------------- CONFIG ---------------- */
+const DURATION_MS = 5 * 60 * 1000;
+const INTERRUPT_DELAY = 60 * 1000;
+const CAN_RESOLVE_PROB = 0.22;
+const BASE_INTERRUPT_PROB = 0.05;
+const RESOLVE_CHECK_CHANCE = 0.015;
+const ACCENT_MODE = "header";
+
+/* ---------------- STATE ---------------- */
+const state = {
+  start: Date.now(),
+  end: Date.now() + DURATION_MS,
+  finished:false,
+  checks:0,
+  canResolve: Math.random() < CAN_RESOLVE_PROB,
+  resolved:false,
+  interrupted:false
+};
+
+let TOKEN_SET = [];
+let ledger = {};
+
+/* ---------------- DOM ---------------- */
+const statusValue = document.querySelector("#status .value");
+const tokenLayer = document.getElementById("tokenLayer");
+const interrupt = document.getElementById("interrupt");
+const ledgerBody = document.getElementById("ledgerBody");
+
+/* ---------------- LOAD TOKENS ---------------- */
+fetch("tokens.json")
+  .then(r => r.json())
+  .then(data => TOKEN_SET = data.tokens || [])
+  .catch(() => {
+    TOKEN_SET = [{ kind:"default", label:"Received", subtitle:"", accent:"#999", weight:1 }];
+  });
+
+function pickToken(){
+  if(!TOKEN_SET.length) return TOKEN_SET[0];
+  const r = Math.random();
+  let acc = 0;
+  for(const t of TOKEN_SET){
+    acc += t.weight || 0;
+    if(r <= acc) return t;
+  }
+  return TOKEN_SET[TOKEN_SET.length - 1];
+}
+
+/* ---------------- LEDGER ---------------- */
+function updateLedger(kind){
+  ledger[kind] = (ledger[kind] || 0) + 1;
+  renderLedger();
+}
+
+function renderLedger(){
+  ledgerBody.innerHTML = "";
+  Object.entries(ledger).forEach(([k,v]) => {
+    const line = document.createElement("div");
+    line.textContent = `${k}: ${v}`;
+    ledgerBody.appendChild(line);
+  });
+}
+
+/* ---------------- SVG TOKEN ---------------- */
+function makeTokenBackground(token, ref){
+  const accent = token.accent || "#bdbdbd";
+  let accentHeader = "#d0d0d0", accentRef="#cfcfcf", accentMargin="transparent", accentStamp="transparent";
+  if(ACCENT_MODE==="header") accentHeader=accent;
+  if(ACCENT_MODE==="ref") accentRef=accent;
+  if(ACCENT_MODE==="margin") accentMargin=accent;
+  if(ACCENT_MODE==="stamp") accentStamp=accent;
+
+  const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="150">
+  <rect x="6" y="6" width="248" height="138" fill="#fbfbfb" stroke="#bdbdbd"/>
+  <rect x="6" y="6" width="6" height="138" fill="${accentMargin}"/>
+  <rect x="10" y="10" width="240" height="22" fill="#efefef" stroke="${accentHeader}"/>
+  <rect x="190" y="13" width="56" height="16" fill="#f6f6f6" stroke="${accentRef}"/>
+  <text x="194" y="25" font-size="9.5" fill="#6a6a6a">REF:${ref}</text>
+  <text x="16" y="70" font-size="20" fill="#222">${token.label}</text>
+  <text x="16" y="92" font-size="10.5" fill="#6a6a6a">${token.subtitle||""}</text>
+  <circle cx="220" cy="110" r="14" fill="none" stroke="${accentStamp}" stroke-width="2"/>
+</svg>`;
+  return "url('data:image/svg+xml;utf8,"+encodeURIComponent(svg)+"')";
+}
+
+function addToken(){
+  const token = pickToken();
+  const ref = Math.random().toString(36).slice(2,8).toUpperCase();
+  const t = document.createElement("div");
+  t.className = "token";
+  t.style.backgroundImage = makeTokenBackground(token, ref);
+
+  const r = tokenLayer.getBoundingClientRect();
+  t.style.left = Math.random() * (r.width - 260) + "px";
+  t.style.top  = Math.random() * (r.height - 150) + "px";
+  t.style.transform = "rotate(" + (Math.random()*8 - 4) + "deg)";
+
+  tokenLayer.appendChild(t);
+  updateLedger(token.kind || "other");
+}
+
+/* ---------------- ACTIVITY ---------------- */
+function backgroundActivity(){
+  if(state.finished || state.interrupted) return;
+
+  if(Math.random() < 0.7) addToken();
+
+  const elapsed = Date.now() - state.start;
+  if(elapsed > INTERRUPT_DELAY){
+    const factor = Math.min(1,(elapsed-INTERRUPT_DELAY)/(DURATION_MS-INTERRUPT_DELAY));
+    if(Math.random() < BASE_INTERRUPT_PROB + factor*0.35){
+      state.interrupted = true;
+      interrupt.style.display = "flex";
+    }
+  }
+
+  if(state.canResolve && !state.resolved && Math.random() < RESOLVE_CHECK_CHANCE){
+    resolve();
+  }
+}
+
+const activityInterval = setInterval(backgroundActivity, 4200);
+
+function checkStatus(){
+  state.checks++;
+  if(Math.random() < 0.5) addToken();
+}
+
+function resolve(){
+  state.resolved = true;
+  state.finished = true;
+  clearInterval(activityInterval);
+  clearAllThenFinish();
+}
+
+function clearAllThenFinish(){
+  tokenLayer.innerHTML = "";
+  interrupt.style.display = "none";
+  document.getElementById("instruction").style.display = "none";
+  document.getElementById("ledger").style.display = "none";
+
+  setTimeout(() => {
+    if(state.resolved){
+      statusValue.textContent = "Resolved";
+      statusValue.classList.remove("pending");
+      statusValue.classList.add("resolved");
+    }
+    const note = document.createElement("div");
+    note.style.marginTop = "8px";
+    note.style.fontSize = "14px";
+    note.textContent = "You checked your status " + state.checks + " times.";
+    document.getElementById("status").appendChild(note);
+  }, 600);
+}
+
+/* ---------------- KEYS ---------------- */
+window.addEventListener("keydown", e => {
+  if(state.finished) return;
+
+  if(state.interrupted){
+    if(e.key==="y"||e.key==="Y"||e.key==="n"||e.key==="N"){
+      interrupt.style.display="none";
+      state.interrupted=false;
+      if(Math.random()<0.4) addToken();
+    }
+    e.preventDefault();
+    return;
+  }
+
+  if(e.key === "?"){
+    checkStatus();
+    e.preventDefault();
+  }
+
+  if(e.key==="y"||e.key==="Y"||e.key==="n"||e.key==="N"){
+    if(Math.random()<0.3) addToken();
+    e.preventDefault();
+  }
+});
+
+/* ---------------- TIMER ---------------- */
+const timer = setInterval(()=>{
+  if(!state.finished && Date.now()>=state.end){
+    state.finished=true;
+    clearInterval(activityInterval);
+    clearInterval(timer);
+    clearAllThenFinish();
+  }
+},500);
+
+/* ---------------- TICKER ---------------- */
+const tickerPhrases=["File located","Review underway","Awaiting confirmation","Processing update","Record matched","Response pending"];
+document.getElementById("tickerTrack").textContent=tickerPhrases.join("          ");
+
+})();
+</script>
+</body>
+</html>
