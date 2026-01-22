@@ -1,0 +1,9 @@
+{
+  "messages": [
+    { "text": "Review underway", "weight": 0.25 },
+    { "text": "File located", "weight": 0.15 },
+    { "text": "Awaiting confirmation", "weight": 0.20 },
+    { "text": "Processing update", "weight": 0.20 },
+    { "text": "Response pending", "weight": 0.20 }
+  ]
+}
